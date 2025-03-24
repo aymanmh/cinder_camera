@@ -1,0 +1,11 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/include/Helpers.h
+/src/Helpers.cpp
+/src/cinder_cameraApp - Copy.cpp_
+/vc2019/.vs/cinder_camera
+/vc2019/cinder_camera/x64
+/vc2019/packages
+/vc2019/x64
