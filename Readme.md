@@ -9,3 +9,8 @@
 If different modes are used, input and output need to be changed accordingly
 
 #### A different example using face emotion detector model is in the other branch of the this same repo 
+
+
+
+https://github.com/user-attachments/assets/62ea9270-3c48-4c93-8704-6e984e4eae7c
+
