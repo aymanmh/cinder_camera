@@ -9,3 +9,5 @@
 /vc2019/cinder_camera/x64
 /vc2019/packages
 /vc2019/x64
+
+emotion_detector_fp16.onnx

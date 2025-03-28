@@ -5,7 +5,7 @@
 #include "cinder/Log.h"
 #include "cinder/ImageIo.h"
 #include "cinder/gl/Texture.h"	
-
+#include "cinder/CinderImGui.h"
 #include "CinderOpenCV.h"
 #include "Helpers.h"
 
@@ -14,6 +14,11 @@
 #include <array>
 #include <vector>
 
+using std::chrono::high_resolution_clock;
+using std::chrono::duration_cast;
+using std::chrono::duration;
+using std::chrono::milliseconds;
+
 using namespace ci;
 using namespace ci::app;
 using namespace std;
@@ -21,6 +26,11 @@ using namespace std;
 #if defined( CINDER_ANDROID )
 #define USE_HW_TEXTURE
 #endif    
+
+static void MyOrtLogs(void* param, OrtLoggingLevel severity, const char* category, const char* logid, const char* code_location, const char* message)
+{
+	CI_LOG_I(message);
+}
 
 class CaptureBasicApp : public App {
 public:
@@ -37,31 +47,44 @@ private:
 
 	CaptureRef			mCapture;
 	gl::TextureRef		mTexture;
+	std::string mModelBasePath = "../assets/";
+
 	std::unique_ptr<Ort::Session> mSession;
 	static const int64 IMAGE_HEIGHT = 720;
 	static const int64 IMAGE_WIDTH = 720;
 	static const int IMAGE_CHANNELS = 3;
-	static const int64_t numInputElements = IMAGE_HEIGHT * IMAGE_WIDTH * IMAGE_CHANNELS;
-	const std::array<int64_t, 4> inputShape = { 1, IMAGE_CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH };
-	const std::array<int64_t, 4> outputShape = { 1, IMAGE_CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH };
-	std::vector<float> inputImageVec;
-	std::vector<float> outputImageVec;
-	std::vector<uint8_t> outputImageU8;
+	static const int64_t mNumInputElements = IMAGE_HEIGHT * IMAGE_WIDTH * IMAGE_CHANNELS;
+	const std::array<int64_t, 4> mInputShape = { 1, IMAGE_CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH };
+	const std::array<int64_t, 4> mOutputShape = { 1, IMAGE_CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH };
+	std::vector<float> mInputImageVec;
+	std::vector<float> mOutputImageVec;
+	std::vector<uint8_t> mOutputImageU8;
 
-	std::array<const char*, 1> inputNames;
-	std::array<const char*, 1> outputNames;
+	std::array<const char*, 1> mInputNames;
+	std::array<const char*, 1> mOutputNames;
 
-	Ort::Value outputTensor{ nullptr };
-	Ort::MemoryInfo memoryInfo{ nullptr };
-	Ort::Value inputTensor{ nullptr };
+	Ort::Value mOutputTensor{ nullptr };
+	Ort::MemoryInfo mMemoryInfo{ nullptr };
+	Ort::Value mInputTensor{ nullptr };
+
+	//for imGui
+	vector<string>				mModelNames;
+	int							mModelSelection;
+	size_t mCurrentModel;
 };
 
 void CaptureBasicApp::setup()
 {
-	setFrameRate(1);
+	setFrameRate(30);
+	getWindow()->setTitle("Style Transfer");
 
 	printDevices();
 
+	ImGui::Initialize();
+
+	mCurrentModel = mModelSelection = 0;
+	mModelNames = { "Mosaic", "la_muse", "Udnie" , "Candy"};
+;
     initModel();
 
 	try {
@@ -81,24 +104,27 @@ void CaptureBasicApp::update()
 		mTexture = mCapture->getTexture();
 	}
 #else
+	if (ImGui::Combo("Models", &mModelSelection, mModelNames)) {
+		mCurrentModel = (size_t)mModelSelection;
+		initModel();
+	}
+
+
 	if (mCapture && mCapture->checkNewFrame()) {
 			cv::Mat input(toOcv(*mCapture->getSurface()));
 
 			cv::flip(input, input,1);
 			cv::Mat styledImage;
 
-			using std::chrono::high_resolution_clock;
-			using std::chrono::duration_cast;
-			using std::chrono::duration;
-			using std::chrono::milliseconds;
-			auto t1 = high_resolution_clock::now();
 
+			auto t1 = high_resolution_clock::now();
+			
 			applyStyle(input, styledImage);	
 
 			auto t2 = high_resolution_clock::now();
-			/* Getting number of milliseconds as an integer. */
 			auto ms_int = duration_cast<milliseconds>(t2 - t1);
-			CI_LOG_I(ms_int.count());
+			//CI_LOG_I(ms_int.count());
+
 			// Capture images come back as top-down, and it's more efficient to keep them that way
 			mTexture = gl::Texture::create(fromOcv(styledImage), gl::Texture::Format().loadTopDown());
 	}
@@ -143,16 +169,28 @@ void CaptureBasicApp::printDevices()
 
 void CaptureBasicApp::initModel()
 {
-	//std::wstring model_path = L"C:\\code\\assests\\fnst2\\mosaic-9.onnx";
-	std::wstring model_path = L"C:\\code\\assests\\candy.onnx";
-	Ort::Env env;
+	 const std::wstring modelPath = std::filesystem::path(mModelBasePath + mModelNames[mCurrentModel] + ".onnx").wstring();
+
+	//check if model file exists
+	if (!std::filesystem::exists(modelPath))
+	{
+		CI_LOG_E("Model file not found!");
+		throw new Exception("Model file not found!");
+	}
+	//Create a custom logger, so we can see logs in debug output if running under debugger or
+	// with dbgview if not.
+	std::string logId = "MyInferenceLog";
+	Ort::Env env{ OrtLoggingLevel::ORT_LOGGING_LEVEL_INFO,logId.c_str(),MyOrtLogs,nullptr };
+
 	Ort::RunOptions runOptions;
 
-	inputImageVec.resize(numInputElements);
-	outputImageVec.resize(numInputElements);
-	outputImageU8.resize(numInputElements);
+	mInputImageVec.resize(mNumInputElements);
+	mOutputImageVec.resize(mNumInputElements);
+	mOutputImageU8.resize(mNumInputElements);
 
 	Ort::SessionOptions ort_session_options;
+
+	// the quantized version of this model fails to load if using dmt, comment these lines if loading a quantized model
 	ort_session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 	std::unordered_map<std::string, std::string> dml_options;
 	dml_options["performance_preference"] = "high_performance";
@@ -160,67 +198,67 @@ void CaptureBasicApp::initModel()
 	dml_options["disable_metacommands"] = "false";
 	dml_options["enable_graph_capture"] = "false";
 	ort_session_options.AppendExecutionProvider("DML", dml_options);
-	
-	memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+	ort_session_options.SetLogId("InferenceLog");
+	ort_session_options.SetLogSeverityLevel(1);
 
-	mSession = std::make_unique<Ort::Session>(env, model_path.c_str(), ort_session_options);
+	mMemoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+
+	mSession = std::make_unique<Ort::Session>(env, modelPath.c_str(), ort_session_options);
 
 	// define names
 	Ort::AllocatorWithDefaultOptions ort_alloc;
 	Ort::AllocatedStringPtr inputName = mSession->GetInputNameAllocated(0, ort_alloc);
 	Ort::AllocatedStringPtr outputName = mSession->GetOutputNameAllocated(0, ort_alloc);
-	inputNames = { inputName.get() };
-	outputNames = { outputName.get() };
+	mInputNames = { inputName.get() };
+	mOutputNames = { outputName.get() };
 	inputName.release();
 	outputName.release();
 
-	outputTensor = Ort::Value::CreateTensor<float>(memoryInfo, outputImageVec.data(), outputImageVec.size(), outputShape.data(),
-		outputShape.size());
+	mOutputTensor = Ort::Value::CreateTensor<float>(mMemoryInfo, mOutputImageVec.data(), mOutputImageVec.size(), mOutputShape.data(),
+		mOutputShape.size());
 
-	inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputImageVec.data(), inputImageVec.size(), inputShape.data(), inputShape.size());
+	mInputTensor = Ort::Value::CreateTensor<float>(mMemoryInfo, mInputImageVec.data(), mInputImageVec.size(), mInputShape.data(), mInputShape.size());
 
-	assert(inputTensor != nullptr);
-	assert(inputTensor.IsTensor());
+	assert(mInputTensor != nullptr);
+	assert(mInputTensor.IsTensor());
 }
 
 int CaptureBasicApp::applyStyle(cv::Mat& inputImage, cv::Mat& outputImage)
 {
-	preprocessImage(inputImage, inputImageVec);
+	preprocessImage(inputImage, mInputImageVec);
 	Ort::RunOptions runOptions{};
 
 	// run inference
 	try {
-		mSession->Run(runOptions, inputNames.data(), &inputTensor, 1, outputNames.data(), &outputTensor, 1);
+		mSession->Run(runOptions, mInputNames.data(), &mInputTensor, 1, mOutputNames.data(), &mOutputTensor, 1);
 	}
 	catch (Ort::Exception& e) {
 		std::cout << e.what() << std::endl;
 		return 1;
 	}
 
-	assert(outputTensor != nullptr);
-	assert(outputTensor.IsTensor());
+	assert(mOutputTensor != nullptr);
+	assert(mOutputTensor.IsTensor());
 
-	chw_to_hwc(&outputImageVec[0], IMAGE_HEIGHT, IMAGE_WIDTH, &outputImageU8[0]);
+	chw_to_hwc(mOutputImageVec.data(), IMAGE_HEIGHT, IMAGE_WIDTH, &mOutputImageU8[0]);
 
-	outputImage = cv::Mat(IMAGE_HEIGHT, IMAGE_WIDTH, CV_8UC3, &outputImageU8[0], IMAGE_HEIGHT * IMAGE_CHANNELS);
+	outputImage = cv::Mat(IMAGE_HEIGHT, IMAGE_WIDTH, CV_8UC3, &mOutputImageU8[0], IMAGE_HEIGHT * IMAGE_CHANNELS);
 
-	cv::resize(outputImage, outputImage, cv::Size(640,480));
+	cv::resize(outputImage, outputImage, cv::Size(640,480) , cv::InterpolationFlags::INTER_CUBIC);
 
 	return 0;
 }
 
 void CaptureBasicApp::preprocessImage(cv::Mat& inputImage, std::vector<float>& outputImage)
 {
-	// convert from BGR to RGB - depending on model input
-	//cv::cvtColor(*inputImage, *inputImage, cv::COLOR_BGR2RGB);
+	cv::Mat processedImage;
+	cv::resize(inputImage, processedImage, cv::Size(IMAGE_WIDTH, IMAGE_HEIGHT), cv::InterpolationFlags::INTER_AREA);
 
-	// resize
-	cv::Mat resisedImage;
-	cv::resize(inputImage, resisedImage, cv::Size(IMAGE_WIDTH, IMAGE_HEIGHT));
+	// The frame from the camera comes as BGR and the model takes BGR, no conversion is needed
 
 	std::vector<cv::Mat> rgb_images(3);
 
-	cv::split(resisedImage, rgb_images);
+	cv::split(processedImage, rgb_images);
 
 	// convert to chw
 	// Stretch one-channel images to vector
@@ -252,7 +290,10 @@ void CaptureBasicApp::chw_to_hwc(const float* input, const size_t h, const size_
 		size_t t = c * stride;
 		for (size_t i = 0; i != stride; ++i) {
 			float f = input[t + i];
-			if (f < 0.f || f > 255.0f) f = 0;
+			if (f < 0.f)
+				f = 0;
+			else if (f > 255.0f)
+				f = 255.f;
 			output[i * 3 + c] = (uint8_t)f;
 		}
 	}
